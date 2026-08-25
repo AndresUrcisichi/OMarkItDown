@@ -116,14 +116,24 @@ configuración debe ser absoluta.
 
 ## Pruebas
 
-Sin dependencias adicionales ni acceso a la configuración real:
+Las comprobaciones unitarias rápidas no requieren MarkItDown; las pruebas de
+conversión real se omiten con un motivo explícito si se usa un Python sin esa
+dependencia:
 
 ```sh
 python -m unittest discover -s tests -v
 bash -n install.sh src/markitdown-convert
 ```
 
-Las pruebas reales de contenido PDF/DOCX/PPTX/XLSX, integración GTK/Wayland,
-notificación y aparición desde `SUPER+SPACE` quedan pendientes hasta aprobar el
-runtime y la instalación. El selector depende de GTK 4 suficientemente reciente
-para `Gtk.FileDialog` (confirmado para el Omarchy 4.0.0-1 investigado).
+Tras aprobar y preparar el runtime bloqueado local, ejecutar la cobertura de
+integración real (sin descargar ni sincronizar dependencias):
+
+```sh
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+Esta última genera temporalmente documentos PDF, DOCX, PPTX y XLSX y comprueba
+la ruta real de MarkItDown, publicación, portapapeles simulado, limpieza y una
+colisión `-2`. No cubre integración GTK/Wayland, notificación de escritorio ni
+aparición desde `SUPER+SPACE`. El selector depende de GTK 4 suficientemente
+reciente para `Gtk.FileDialog` (confirmado para el Omarchy 4.0.0-1 investigado).
