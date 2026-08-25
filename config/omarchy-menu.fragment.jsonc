@@ -1,0 +1,7 @@
+// MarkItDown-Omarchy: esta propiedad se fusiona en el objeto overlay existente.
+"trigger.markitdown": {
+  "icon": "󰈙",
+  "label": "MarkItDown",
+  "description": "Convert a local document to Markdown",
+  "action": "$HOME/.config/omarchy/scripts/markitdown-convert"
+}

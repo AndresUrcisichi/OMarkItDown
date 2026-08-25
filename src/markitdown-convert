@@ -1,0 +1,38 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+OMARCHY_DIR=$(dirname -- "$SCRIPT_DIR")
+APP_DIR="$OMARCHY_DIR/markitdown-omarchy"
+GUI="$APP_DIR/markitdown_drop.py"
+BACKEND="$APP_DIR/markitdown_backend.py"
+BACKEND_PYTHON="$APP_DIR/.venv/bin/python"
+
+preflight_error() {
+  printf '%s\n' "$1" >&2
+  if command -v omarchy >/dev/null 2>&1; then
+    omarchy notification send --app-name MarkItDown -g '󰈙' -u critical \
+      'No se pudo abrir MarkItDown' "$2" >/dev/null 2>&1 || true
+  fi
+}
+
+if [ ! -x /usr/bin/python ]; then
+  preflight_error \
+    'MarkItDown-Omarchy: falta /usr/bin/python con GTK4.' \
+    'Falta /usr/bin/python con GTK4.'
+  exit 1
+fi
+if [ ! -f "$GUI" ] || [ ! -f "$BACKEND" ]; then
+  printf '%s\n' 'MarkItDown-Omarchy: instalación incompleta.' >&2
+  exit 1
+fi
+
+PREFLIGHT='import gi; gi.require_version("Gtk", "4.0"); from gi.repository import Gtk; assert hasattr(Gtk, "FileDialog")'
+if ! /usr/bin/python -c "$PREFLIGHT" 2>/dev/null; then
+  preflight_error \
+    'MarkItDown-Omarchy: GTK4/PyGObject con Gtk.FileDialog no está disponible.' \
+    'Falta GTK4/PyGObject con Gtk.FileDialog.'
+  exit 1
+fi
+
+exec /usr/bin/python "$GUI" --backend-python "$BACKEND_PYTHON" --backend "$BACKEND"
