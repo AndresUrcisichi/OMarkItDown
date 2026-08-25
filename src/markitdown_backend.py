@@ -253,11 +253,11 @@ def copy_clipboard(text: str, run: Callable[..., subprocess.CompletedProcess] = 
     try:
         result = run(
             ["wl-copy", "--type", "text/plain"], input=text, text=True,
-            capture_output=True, check=False, timeout=30,
+            check=False, timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return False, str(exc)
-    return (True, "") if result.returncode == 0 else (False, result.stderr.strip() or "wl-copy falló")
+    return (True, "") if result.returncode == 0 else (False, f"wl-copy falló (código {result.returncode})")
 
 
 def notify(headline: str, description: str, urgency: str = "normal",

@@ -196,18 +196,35 @@ class IntegrationUnitTests(unittest.TestCase):
 
     def test_clipboard_argv_and_stdin(self):
         calls = []
+
         def run(argv, **kwargs):
             calls.append((argv, kwargs))
-            return subprocess.CompletedProcess(argv, 0, "", "")
+            return subprocess.CompletedProcess(argv, 0)
+
         self.assertEqual(backend.copy_clipboard("a;$()\n", run), (True, ""))
         self.assertEqual(calls[0][0], ["wl-copy", "--type", "text/plain"])
+        self.assertNotIn("capture_output", calls[0][1])
+        self.assertNotIn("stdout", calls[0][1])
+        self.assertNotIn("stderr", calls[0][1])
         self.assertEqual(calls[0][1]["input"], "a;$()\n")
+        self.assertTrue(calls[0][1]["text"])
+        self.assertFalse(calls[0][1]["check"])
+        self.assertEqual(calls[0][1]["timeout"], 30)
+
+    def test_clipboard_nonzero_reports_return_code(self):
+        result = subprocess.CompletedProcess(["wl-copy"], 7)
+        self.assertEqual(
+            backend.copy_clipboard("text", lambda *_a, **_k: result),
+            (False, "wl-copy falló (código 7)"),
+        )
 
     def test_notification_argv(self):
         seen = []
+
         def run(argv, **kwargs):
             seen.append(argv)
             return subprocess.CompletedProcess(argv, 0, "", "")
+
         self.assertTrue(backend.notify("t;$()", "d\n'", run=run))
         self.assertEqual(seen[0][-2:], ["t;$()", "d\n'"])
 
