@@ -4,13 +4,14 @@ set -eu
 PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 MODE=dry-run
 ACTION=install
+WITH_RUNTIME=0
 EXPLICIT_CONFIG_ROOT=0
 CONFIG_ROOT=${XDG_CONFIG_HOME:-"${HOME:?HOME no definido}/.config"}
 
 usage() {
   cat <<'EOF'
-Uso: ./install.sh [--dry-run|--apply] [--uninstall] [--config-root RUTA]
-Por seguridad el modo predeterminado es --dry-run. --config-root permite tests aislados.
+Uso: ./install.sh [--dry-run|--apply] [--with-runtime] [--uninstall] [--config-root RUTA]
+Por seguridad el modo predeterminado es --dry-run. --with-runtime aprovisiona opcionalmente el runtime bloqueado con uv; --config-root permite tests aislados.
 EOF
 }
 
@@ -19,6 +20,7 @@ while [ "$#" -gt 0 ]; do
     --dry-run) MODE=dry-run ;;
     --apply) MODE=apply ;;
     --uninstall) ACTION=uninstall ;;
+    --with-runtime) WITH_RUNTIME=1 ;;
     --config-root)
       shift
       [ "$#" -gt 0 ] || { usage >&2; exit 2; }
@@ -47,13 +49,17 @@ SCRIPTS_DIR=$OMARCHY_DIR/scripts
 APP_DIR=$OMARCHY_DIR/markitdown-omarchy
 MENU=$OMARCHY_DIR/extensions/omarchy-menu.jsonc
 MANIFEST=$APP_DIR/install-manifest.tsv
+RUNTIME_DIR=$APP_DIR/.venv
+RUNTIME_OWNER=$RUNTIME_DIR/.markitdown-omarchy-runtime-owner
+RUNTIME_MANIFEST=$RUNTIME_DIR/.markitdown-omarchy-runtime-manifest
 LAUNCHER=$SCRIPTS_DIR/markitdown-convert
 STAMP=$(date +%Y%m%d-%H%M%S)-$$
 FILES='scripts/markitdown-convert|src/markitdown-convert
 markitdown-omarchy/markitdown_backend.py|src/markitdown_backend.py
 markitdown-omarchy/markitdown_drop.py|src/markitdown_drop.py
 markitdown-omarchy/pyproject.toml|pyproject.toml
-markitdown-omarchy/.python-version|.python-version'
+markitdown-omarchy/.python-version|.python-version
+markitdown-omarchy/uv.lock|uv.lock'
 
 hash_file() { sha256sum "$1" | cut -d ' ' -f 1; }
 manifest_hash() {
@@ -72,7 +78,7 @@ validate_manifest() {
     esac
     [ "${#saved_hash}" -eq 64 ] || { printf 'conflicto: manifiesto inválido: %s\n' "$MANIFEST" >&2; return 1; }
     case "$saved_path" in
-      scripts/markitdown-convert|markitdown-omarchy/markitdown_backend.py|markitdown-omarchy/markitdown_drop.py|markitdown-omarchy/pyproject.toml|markitdown-omarchy/.python-version) ;;
+      scripts/markitdown-convert|markitdown-omarchy/markitdown_backend.py|markitdown-omarchy/markitdown_drop.py|markitdown-omarchy/pyproject.toml|markitdown-omarchy/.python-version|markitdown-omarchy/uv.lock) ;;
       *) printf 'conflicto: ruta ajena en manifiesto: %s\n' "$saved_path" >&2; return 1 ;;
     esac
   done < "$MANIFEST"
@@ -88,6 +94,31 @@ maybe_fail() {
     printf 'fallo inyectado de test: %s\n' "$1" >&2
     return 97
   }
+}
+runtime_listing() {
+  runtime=$1
+  find "$runtime" -mindepth 1 ! -path "$RUNTIME_MANIFEST" \( -type f -o -type l \) -print | LC_ALL=C sort | while IFS= read -r item; do
+    relative=${item#"$runtime"/}
+    if [ -L "$item" ]; then
+      printf 'l|%s|%s\n' "$(readlink -- "$item" | sha256sum | cut -d ' ' -f 1)" "$relative"
+    else
+      printf 'f|%s|%s\n' "$(hash_file "$item")" "$relative"
+    fi
+  done
+}
+runtime_is_owned() {
+  [ -e "$RUNTIME_DIR" ] || return 0
+  [ -d "$RUNTIME_DIR" ] && [ ! -L "$RUNTIME_DIR" ] || { printf 'conflicto: runtime .venv ambiguo; se conserva: %s\n' "$RUNTIME_DIR" >&2; return 1; }
+  [ -f "$RUNTIME_OWNER" ] && [ -f "$RUNTIME_MANIFEST" ] || { printf 'conflicto: runtime .venv sin prueba de propiedad; se conserva: %s\n' "$RUNTIME_DIR" >&2; return 1; }
+  [ "$(cat "$RUNTIME_OWNER")" = 'markitdown-omarchy-runtime-v1' ] || { printf 'conflicto: marcador de runtime inválido; se conserva: %s\n' "$RUNTIME_DIR" >&2; return 1; }
+  find "$RUNTIME_DIR" -mindepth 1 ! -type d ! -type f ! -type l -print | grep -q . && { printf 'conflicto: runtime .venv contiene tipo ambiguo; se conserva: %s\n' "$RUNTIME_DIR" >&2; return 1; }
+  runtime_listing "$RUNTIME_DIR" | cmp -s "$RUNTIME_MANIFEST" - || { printf 'conflicto: runtime .venv modificado; se conserva: %s\n' "$RUNTIME_DIR" >&2; return 1; }
+}
+runtime_record_ownership() {
+  printf '%s\n' 'markitdown-omarchy-runtime-v1' > "$RUNTIME_OWNER"
+  chmod 0600 "$RUNTIME_OWNER"
+  runtime_listing "$RUNTIME_DIR" > "$RUNTIME_MANIFEST"
+  chmod 0600 "$RUNTIME_MANIFEST"
 }
 test_replace_before_remove() {
   [ "${MARKITDOWN_OMARCHY_TESTING:-0}" = 1 ] || return 0
@@ -121,6 +152,9 @@ if [ "$ACTION" = install ]; then
   ) || validation_failed=1
   /usr/bin/python "$PROJECT_DIR/src/menu_patch.py" add "$MENU" --action-path "$LAUNCHER" --dry-run || menu_failed=1
   [ "$validation_failed" -eq 0 ] && [ "$menu_failed" -eq 0 ] || exit 3
+  if [ "$WITH_RUNTIME" -eq 1 ] && [ -e "$RUNTIME_DIR" ]; then
+    runtime_is_owned || exit 3
+  fi
 else
   uninstall_conflict=0
   if [ -f "$MANIFEST" ]; then
@@ -143,6 +177,13 @@ else
     exit 3
   fi
   [ "$menu_failed" -eq 0 ] || exit 3
+  if [ -e "$RUNTIME_DIR" ]; then
+    runtime_is_owned || exit 3
+  fi
+fi
+
+if [ "$ACTION" = install ] && [ "$WITH_RUNTIME" -eq 1 ] && [ "$MODE" = apply ]; then
+  command -v uv >/dev/null 2>&1 || { printf '%s\n' 'uv no está disponible; no se instaló ningún archivo' >&2; exit 4; }
 fi
 
 if [ "$MODE" = dry-run ]; then
@@ -158,7 +199,11 @@ if [ "$MODE" = dry-run ]; then
       fi
     done
     printf 'se publicaría manifiesto: %s\n' "$MANIFEST"
-    printf '%s\n' 'no se descargará ni instalará el runtime uv'
+    if [ "$WITH_RUNTIME" -eq 1 ]; then
+      printf 'runtime opcional: uv sync --project %s --python 3.12 --locked; usa el proyecto instalado, Python 3.12 y el lock actual; pueden ocurrir descargas\n' "$APP_DIR"
+    else
+      printf '%s\n' 'no se descargará ni instalará el runtime uv'
+    fi
     exit 0
   fi
 
@@ -224,7 +269,8 @@ rollback() {
   restore 3 "$OMARCHY_DIR/markitdown-omarchy/markitdown_drop.py" || true
   restore 4 "$OMARCHY_DIR/markitdown-omarchy/pyproject.toml" || true
   restore 5 "$OMARCHY_DIR/markitdown-omarchy/.python-version" || true
-  restore 6 "$MANIFEST" || true
+  restore 6 "$OMARCHY_DIR/markitdown-omarchy/uv.lock" || true
+  restore 7 "$MANIFEST" || true
   rm -rf -- "$TXN"
   printf '%s\n' 'operación fallida; se revirtieron los archivos capturados y se conservaron cambios concurrentes detectados' >&2
 }
@@ -235,7 +281,8 @@ capture 2 "$OMARCHY_DIR/markitdown-omarchy/markitdown_backend.py"
 capture 3 "$OMARCHY_DIR/markitdown-omarchy/markitdown_drop.py"
 capture 4 "$OMARCHY_DIR/markitdown-omarchy/pyproject.toml"
 capture 5 "$OMARCHY_DIR/markitdown-omarchy/.python-version"
-capture 6 "$MANIFEST"
+capture 6 "$OMARCHY_DIR/markitdown-omarchy/uv.lock"
+capture 7 "$MANIFEST"
 TRANSACTION_ACTIVE=1
 trap rollback EXIT HUP INT TERM
 
@@ -275,7 +322,22 @@ if [ "$ACTION" = install ]; then
   mkdir -p -- "$APP_DIR"
   mv -f -- "$NEW_MANIFEST" "$MANIFEST"
   maybe_fail after-manifest
-  printf '%s\n' 'Instalación de archivos completa. El runtime .venv aún requiere aprobación y uv.'
+  if [ "$WITH_RUNTIME" -eq 1 ]; then
+    if [ -e "$RUNTIME_DIR" ]; then
+      printf '%s\n' 'Runtime .venv administrado ya está presente; se conserva sin volver a sincronizar.'
+    else
+      if uv sync --project "$APP_DIR" --python 3.12 --locked; then
+        runtime_record_ownership
+        printf 'Runtime .venv aprovisionado con uv y lock actual: %s\n' "$RUNTIME_DIR"
+      else
+        status=$?
+        printf 'uv sync falló; cualquier .venv parcial se conserva por seguridad: %s\n' "$RUNTIME_DIR" >&2
+        exit "$status"
+      fi
+    fi
+  else
+    printf '%s\n' 'Instalación de archivos completa. El runtime .venv aún requiere aprobación y uv.'
+  fi
 else
   maybe_fail before-uninstall
   /usr/bin/python "$PROJECT_DIR/src/menu_patch.py" remove "$MENU" --action-path "$LAUNCHER" --backup-suffix ".bak.$STAMP"
@@ -299,15 +361,20 @@ else
       fi
     done
     current_manifest_hash=$(hash_file "$MANIFEST")
-    captured_manifest_hash=$(hash_file "$TXN/6")
+    captured_manifest_hash=$(hash_file "$TXN/7")
     if [ "$current_manifest_hash" != "$captured_manifest_hash" ]; then
-      : > "$TXN/6.preserve"
+      : > "$TXN/7.preserve"
       printf 'conflicto de desinstalación en el manifiesto; se conserva: %s\n' "$MANIFEST" >&2
       exit 3
     fi
     rm -- "$MANIFEST"
   fi
   maybe_fail after-files
+  if [ -e "$RUNTIME_DIR" ]; then
+    runtime_is_owned || exit 3
+    rm -rf -- "$RUNTIME_DIR"
+    printf 'runtime retirado: %s\n' "$RUNTIME_DIR"
+  fi
   printf '%s\n' 'Desinstalación selectiva completa; pueden quedar directorios vacíos.'
 fi
 

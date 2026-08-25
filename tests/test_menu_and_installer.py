@@ -91,8 +91,18 @@ class MenuTests(unittest.TestCase):
 
 class InstallerTests(unittest.TestCase):
     def run_install(self, config: Path, *args: str, fail: str | None = None,
-                    replace_before_remove: int | None = None):
+                    replace_before_remove: int | None = None, uv_dir: Path | None = None,
+                    uv_log: Path | None = None, uv_fail: bool = False,
+                    path: str | None = None):
         env = {**os.environ, "HOME": str(config.parent / "home"), "XDG_CONFIG_HOME": str(config)}
+        if uv_dir is not None:
+            env["PATH"] = f"{uv_dir}:{env.get('PATH', '')}"
+        if path is not None:
+            env["PATH"] = path
+        if uv_log is not None:
+            env["MARKITDOWN_OMARCHY_TEST_UV_LOG"] = str(uv_log)
+        if uv_fail:
+            env["MARKITDOWN_OMARCHY_TEST_UV_FAIL"] = "1"
         if fail or replace_before_remove is not None:
             env["MARKITDOWN_OMARCHY_TESTING"] = "1"
         if fail:
@@ -100,7 +110,7 @@ class InstallerTests(unittest.TestCase):
         if replace_before_remove is not None:
             env["MARKITDOWN_OMARCHY_TEST_REPLACE_BEFORE_REMOVE"] = str(replace_before_remove)
         return subprocess.run(
-            ["sh", str(ROOT / "install.sh"), *args, "--config-root", str(config)],
+            ["/bin/sh", str(ROOT / "install.sh"), *args, "--config-root", str(config)],
             cwd=ROOT, env=env, text=True, capture_output=True,
         )
 
@@ -235,6 +245,136 @@ class InstallerTests(unittest.TestCase):
                 cwd=ROOT, env=env, text=True, capture_output=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_ambiguous_runtime_blocks_uninstall_before_any_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config"
+            bin_dir = Path(directory) / "bin"
+            bin_dir.mkdir()
+            fake_uv = bin_dir / "uv"
+            fake_uv.write_text(
+                "#!/bin/sh\n"
+                "project=\n"
+                "while [ \"$#\" -gt 0 ]; do\n"
+                "  [ \"$1\" = --project ] && { shift; project=$1; }\n"
+                "  shift\n"
+                "done\n"
+                "mkdir -p \"$project/.venv/bin\"\n"
+                "printf runtime > \"$project/.venv/bin/python\"\n"
+            )
+            fake_uv.chmod(0o755)
+            applied = self.run_install(config, "--apply", "--with-runtime", uv_dir=bin_dir)
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+
+            menu = config / "omarchy/extensions/omarchy-menu.jsonc"
+            app = config / "omarchy/markitdown-omarchy"
+            launcher = config / "omarchy/scripts/markitdown-convert"
+            manifest = app / "install-manifest.tsv"
+            runtime = app / ".venv"
+            (runtime / "foreign").write_text("keep")
+            snapshots = {
+                "menu": menu.read_bytes(),
+                "launcher": launcher.read_bytes(),
+                "backend": (app / "markitdown_backend.py").read_bytes(),
+                "manifest": manifest.read_bytes(),
+                "runtime": sorted(
+                    (path.relative_to(runtime), path.read_bytes())
+                    for path in runtime.rglob("*") if path.is_file()
+                ),
+            }
+
+            blocked = self.run_install(config, "--apply", "--uninstall")
+            self.assertEqual(blocked.returncode, 3, blocked.stderr)
+            self.assertEqual(menu.read_bytes(), snapshots["menu"])
+            self.assertEqual(launcher.read_bytes(), snapshots["launcher"])
+            self.assertEqual((app / "markitdown_backend.py").read_bytes(), snapshots["backend"])
+            self.assertEqual(manifest.read_bytes(), snapshots["manifest"])
+            self.assertEqual(
+                sorted((path.relative_to(runtime), path.read_bytes()) for path in runtime.rglob("*") if path.is_file()),
+                snapshots["runtime"],
+            )
+
+    def test_runtime_opt_in_uses_locked_uv_and_owned_runtime_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config space"
+            bin_dir = Path(directory) / "bin"
+            bin_dir.mkdir()
+            uv_log = Path(directory) / "uv.log"
+            fake_uv = bin_dir / "uv"
+            fake_uv.write_text(
+                "#!/bin/sh\n"
+                "printf '%s' \"$#\" >> \"$MARKITDOWN_OMARCHY_TEST_UV_LOG\"\n"
+                "for argument in \"$@\"; do printf '[%s]' \"$argument\" >> \"$MARKITDOWN_OMARCHY_TEST_UV_LOG\"; done\n"
+                "printf '\\n' >> \"$MARKITDOWN_OMARCHY_TEST_UV_LOG\"\n"
+                "[ \"${MARKITDOWN_OMARCHY_TEST_UV_FAIL:-0}\" = 1 ] && exit 42\n"
+                "project=\n"
+                "while [ \"$#\" -gt 0 ]; do\n"
+                "  [ \"$1\" = --project ] && { shift; project=$1; }\n"
+                "  shift\n"
+                "done\n"
+                "mkdir -p \"$project/.venv/bin\"\n"
+                "printf runtime > \"$project/.venv/bin/python\"\n"
+            )
+            fake_uv.chmod(0o755)
+
+            default = self.run_install(config, "--apply")
+            self.assertEqual(default.returncode, 0, default.stderr)
+            self.assertFalse(uv_log.exists())
+            dry = self.run_install(config, "--with-runtime", uv_dir=bin_dir, uv_log=uv_log)
+            self.assertEqual(dry.returncode, 0, dry.stderr)
+            self.assertIn(str(config / "omarchy/markitdown-omarchy"), dry.stdout)
+            self.assertIn("Python 3.12", dry.stdout)
+            self.assertIn("--locked", dry.stdout)
+            self.assertIn("descargas", dry.stdout)
+            self.assertFalse(uv_log.exists())
+
+            applied = self.run_install(config, "--apply", "--with-runtime", uv_dir=bin_dir, uv_log=uv_log)
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertEqual(uv_log.read_text(), f"6[sync][--project][{config / 'omarchy/markitdown-omarchy'}][--python][3.12][--locked]\n")
+            runtime = config / "omarchy/markitdown-omarchy/.venv"
+            self.assertTrue((runtime / ".markitdown-omarchy-runtime-owner").is_file())
+            self.assertTrue((runtime / ".markitdown-omarchy-runtime-manifest").is_file())
+            self.assertTrue((config / "omarchy/markitdown-omarchy/uv.lock").is_file())
+            repeated = self.run_install(config, "--apply", "--with-runtime", uv_dir=bin_dir, uv_log=uv_log)
+            self.assertEqual(repeated.returncode, 0, repeated.stderr)
+            self.assertEqual(len(uv_log.read_text().splitlines()), 1)
+
+            (runtime / "foreign").write_text("keep")
+            blocked = self.run_install(config, "--apply", "--uninstall")
+            self.assertEqual(blocked.returncode, 3, blocked.stderr)
+            self.assertTrue(runtime.exists())
+            (runtime / "foreign").unlink()
+            uninstall = self.run_install(config, "--apply", "--uninstall")
+            self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
+            self.assertFalse(runtime.exists())
+
+    def test_runtime_requires_uv_before_installing_files_and_preserves_failed_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config"
+            bin_dir = Path(directory) / "bin"
+            bin_dir.mkdir()
+            (bin_dir / "date").symlink_to("/usr/bin/date")
+            (bin_dir / "dirname").symlink_to("/usr/bin/dirname")
+            missing = self.run_install(config, "--apply", "--with-runtime", path=str(bin_dir))
+            self.assertEqual(missing.returncode, 4)
+            self.assertIn("uv no está disponible", missing.stderr)
+            self.assertFalse((config / "omarchy/scripts/markitdown-convert").exists())
+
+            fake_uv = bin_dir / "uv"
+            fake_uv.write_text("#!/bin/sh\nmkdir -p \"$3/.venv\"\nexit 42\n")
+            fake_uv.chmod(0o755)
+            failed = self.run_install(config, "--apply", "--with-runtime", uv_dir=bin_dir, uv_fail=True)
+            self.assertEqual(failed.returncode, 42, failed.stderr)
+            app = config / "omarchy/markitdown-omarchy"
+            self.assertFalse((config / "omarchy/scripts/markitdown-convert").exists())
+            self.assertFalse((config / "omarchy/extensions/omarchy-menu.jsonc").exists())
+            self.assertFalse((app / "markitdown_backend.py").exists())
+            self.assertFalse((app / "markitdown_drop.py").exists())
+            self.assertFalse((app / "pyproject.toml").exists())
+            self.assertFalse((app / ".python-version").exists())
+            self.assertFalse((app / "uv.lock").exists())
+            self.assertFalse((app / "install-manifest.tsv").exists())
+            self.assertTrue((app / ".venv").exists())
 
     def test_foreign_trigger_conflict(self):
         with tempfile.TemporaryDirectory() as directory:

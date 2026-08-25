@@ -14,7 +14,7 @@ archivos administrados en `/usr/share/omarchy`.
 - `src/markitdown_backend.py`: proceso Python 3.12 aislado con MarkItDown.
 - `install.sh`: edición marcada y atómica del overlay, copias con manifiesto,
   rollback transaccional y retirada selectiva. El modo predeterminado es
-  `--dry-run`.
+  `--dry-run`; `--with-runtime` es una provisión opcional del entorno aislado.
 
 El backend emite una línea JSON por stdout. Estados: `success` (código 0),
 `error` de validación (2), conversión (3) o guardado (4), `partial` por fallo de
@@ -50,26 +50,31 @@ temporales. Tras 15 segundos la ventana habilita una acción explícita de «For
 
 ## Dependencias y aprobaciones necesarias
 
-El repositorio no incluye `uv.lock`: no debe afirmarse reproducibilidad cerrada
-hasta generarlo tras una resolución aprobada. **Esta entrega no descarga ni
-instala nada.** Antes del uso real hacen falta dos aprobaciones separadas:
-
-1. Aprobar que `uv` obtenga Python 3.12 y `markitdown[pdf,docx,pptx,xlsx]==0.1.7`.
-2. Aprobar que el instalador escriba bajo `~/.config/omarchy/`.
-
-Tras aprobar la escritura, revisar primero:
+El repositorio incluye `uv.lock`, que se copia junto con el proyecto instalado.
+La instalación sigue siendo solo de configuración por defecto y no requiere que
+`uv` esté disponible:
 
 ```sh
 ./install.sh --dry-run
 ./install.sh --apply
 ```
 
-Después de aprobar también las descargas, crear el runtime instalado (este
-comando puede descargar Python y paquetes):
+Para aprobar explícitamente la provisión del runtime aislado, revisar primero el
+plan y después aplicarlo:
 
 ```sh
-uv sync --project "$HOME/.config/omarchy/markitdown-omarchy" --python 3.12
+./install.sh --dry-run --with-runtime
+./install.sh --apply --with-runtime
 ```
+
+El plan indica la ruta instalada exacta, Python 3.12, el lock actual y que puede
+haber descargas, sin ejecutar nada. Al aplicar, el instalador comprueba `uv`
+antes de escribir archivos y usa exactamente `uv sync --project RUTA --python
+3.12 --locked`. No usa `pip`, Python global ni habilita plugins de terceros de
+MarkItDown. `--locked` impide que uv vuelva a resolver o modifique el lock. Si
+falta `uv`, aborta antes de cualquier publicación; si `uv sync` falla, se revierte
+la configuración transaccional y se conserva cualquier `.venv` parcial para no
+borrar contenido de procedencia incierta.
 
 Finalmente puede ejecutarse `omarchy menu refresh`, abrir `SUPER+SPACE`, buscar
 “MarkItDown” y validar selector, ruta pegada, DnD, cancelación y portapapeles.
@@ -91,11 +96,17 @@ se cancela completa para conservar tanto esos archivos como la entrada de menú
 y evitar un estado incoherente.
 
 La desinstalación no borra directorios: pueden quedar directorios vacíos para
-evitar retirar contenedores que también sean usados por terceros. Tampoco se
-promete restauración byte-a-byte de directorios. Si el overlay de menú no
-existía antes, se conserva el objeto vacío resultante porque la versión actual
-no persiste evidencia suficiente para atribuir con seguridad el archivo entero
-al proyecto.
+evitar retirar contenedores que también sean usados por terceros. La excepción
+conservadora es una `.venv` creada por `--with-runtime`: el instalador guarda en
+ella un marcador de propiedad y un manifiesto con hashes de cada archivo regular
+y enlace simbólico. Solo la elimina si el directorio no es un enlace, los dos
+metadatos son válidos, no contiene tipos especiales y su listado actual coincide
+exactamente con el manifiesto. Un archivo añadido, modificado, ambiguo o un
+runtime parcial sin manifiesto bloquea toda la desinstalación y se conserva; no
+se hace borrado recursivo de datos inciertos. Tampoco se promete restauración
+byte-a-byte de directorios. Si el overlay de menú no existía antes, se conserva
+el objeto vacío resultante porque la versión actual no persiste evidencia
+suficiente para atribuir con seguridad el archivo entero al proyecto.
 
 El destino normal respeta `XDG_CONFIG_HOME` (con respaldo en `~/.config`). Para
 pruebas, `--config-root RUTA` dirige todo a un sandbox y la acción del menú se
