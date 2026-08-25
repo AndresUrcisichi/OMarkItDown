@@ -74,6 +74,9 @@ class Window(Gtk.ApplicationWindow):
         self.cancel_button = Gtk.Button(label="Cancelar", sensitive=False)
         self.cancel_button.connect("clicked", lambda *_: self.cancel())
         actions.append(self.cancel_button)
+        self.force_stop_button = Gtk.Button(label="Forzar detención", sensitive=False)
+        self.force_stop_button.connect("clicked", lambda *_: self.force_stop())
+        actions.append(self.force_stop_button)
         box.append(actions)
 
     def choose_file(self, _button: Gtk.Button) -> None:
@@ -108,7 +111,7 @@ class Window(Gtk.ApplicationWindow):
         self.entry.set_text(path)
         return True
 
-    def start(self) -> None:
+    def start(self, confirmed_large_path: str | None = None) -> None:
         if self.process is not None:
             return
         if not Path(self.backend_python).is_file():
@@ -116,10 +119,10 @@ class Window(Gtk.ApplicationWindow):
             return
         path = self.entry.get_text()
         warning = large_file_warning(path)
-        if warning:
-            self.status.set_text(f"Advertencia: {warning} Convirtiendo…")
-        else:
-            self.status.set_text("Convirtiendo…")
+        if warning and path != confirmed_large_path:
+            self.confirm_large_file(path, warning)
+            return
+        self.status.set_text("Convirtiendo…")
         self.convert_button.set_sensitive(False)
         self.cancel_button.set_sensitive(True)
         try:
@@ -133,6 +136,24 @@ class Window(Gtk.ApplicationWindow):
             return
         self.cancel_requested = False
         threading.Thread(target=self.wait_backend, args=(self.process,), daemon=True).start()
+
+    def confirm_large_file(self, path: str, warning: str) -> None:
+        dialog = Gtk.MessageDialog(
+            transient_for=self, modal=True, buttons=Gtk.ButtonsType.NONE,
+            text="Confirmación requerida para archivo grande",
+        )
+        dialog.set_secondary_text(f"{warning} ¿Quieres iniciar la conversión ahora?")
+        dialog.add_button("Cancelar", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Convertir", Gtk.ResponseType.ACCEPT)
+        dialog.connect("response", self.large_file_response, path)
+        dialog.present()
+
+    def large_file_response(self, dialog: Gtk.MessageDialog, response: int, path: str) -> None:
+        dialog.destroy()
+        if response == Gtk.ResponseType.ACCEPT:
+            self.start(path)
+        else:
+            self.status.set_text("Conversión cancelada antes de iniciar el backend.")
 
     def wait_backend(self, process: subprocess.Popen[str]) -> None:
         stdout, stderr = process.communicate()
@@ -167,6 +188,7 @@ class Window(Gtk.ApplicationWindow):
         self.status.set_text(message)
         self.convert_button.set_sensitive(True)
         self.cancel_button.set_sensitive(False)
+        self.force_stop_button.set_sensitive(False)
 
     def cancel(self) -> None:
         process = self.process
@@ -179,8 +201,33 @@ class Window(Gtk.ApplicationWindow):
         if process.poll() is None:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
+                GLib.timeout_add_seconds(15, lambda: self.offer_force_stop(process))
             except ProcessLookupError:
                 pass
+
+    def offer_force_stop(self, process: subprocess.Popen[str]) -> bool:
+        if self.process is process and self.cancel_requested and process.poll() is None:
+            self.status.set_text(
+                "El backend no terminó tras 15 segundos. Puedes forzar su detención; "
+                "SIGKILL puede impedir su limpieza de instantáneas temporales."
+            )
+            self.force_stop_button.set_sensitive(True)
+        return GLib.SOURCE_REMOVE
+
+    def force_stop(self) -> None:
+        process = self.process
+        if process is None or not self.cancel_requested or process.poll() is not None:
+            return
+        try:
+            # Solo se señaliza el PID del backend que creó esta ventana, nunca un PID ajeno.
+            os.kill(process.pid, signal.SIGKILL)
+            self.status.set_text(
+                "Detención forzada solicitada. El backend podría no completar la limpieza; "
+                "revisa Downloads antes de reintentar."
+            )
+            self.force_stop_button.set_sensitive(False)
+        except ProcessLookupError:
+            pass
 
     def on_close_request(self, _window: Gtk.Window) -> bool:
         if self.process is None:

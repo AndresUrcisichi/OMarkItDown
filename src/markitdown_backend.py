@@ -297,6 +297,8 @@ def run_conversion(raw_path: str, *, destination_dir: Path | None = None,
         snapshot = snapshot_local(path, target_dir, source_identity)
         cancellation.checkpoint()
         text = converter(snapshot)
+        if not text.strip():
+            raise ValueError("MarkItDown devolvió Markdown vacío o solo espacios.")
         cancellation.checkpoint()
     except CancelledError:
         emit({"status": "cancelled", "message": "Conversión cancelada."})

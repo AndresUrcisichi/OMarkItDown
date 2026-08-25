@@ -228,6 +228,27 @@ class IntegrationUnitTests(unittest.TestCase):
             self.assertEqual((root / "a.md").read_text(), "markdown")
             self.assertIn('"status": "partial"', output.getvalue())
 
+    def test_empty_markdown_is_conversion_error_without_output_or_clipboard(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "a.pdf"
+            source.write_bytes(b"x")
+            clipboard = mock.Mock(return_value=(True, ""))
+            output = io.StringIO()
+            with mock.patch("sys.stdout", output):
+                for text in ("", " \n\t "):
+                    with self.subTest(text=repr(text)):
+                        code = backend.run_conversion(
+                            str(source), destination_dir=root,
+                            converter=lambda _p, value=text: value,
+                            clipboard=clipboard, notifier=lambda *_a: True,
+                        )
+                        self.assertEqual(code, backend.EXIT_CONVERSION)
+            self.assertFalse((root / "a.md").exists())
+            self.assertFalse(list(root.glob(".markitdown-source-*")))
+            clipboard.assert_not_called()
+            self.assertIn("vacío", output.getvalue())
+
     def test_conversion_error_and_cancel_protocol_leave_no_output(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

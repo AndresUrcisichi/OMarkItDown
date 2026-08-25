@@ -33,7 +33,7 @@ se sincroniza y publica sin reemplazo mediante `renameat2(RENAME_NOREPLACE)`.
 Si el kernel no lo ofrece, `link()` en el mismo filesystem conserva la misma
 garantía atómica de no reemplazo. Se prueban colisiones concurrentes. Solo tras
 guardar se llama `wl-copy --type text/plain`; un fallo conserva el archivo y se
-notifica como éxito parcial. Archivos mayores de 100 MiB generan advertencia.
+notifica como éxito parcial. Archivos mayores de 100 MiB requieren confirmación explícita en la ventana antes de iniciar el backend; al rechazarla no se crea salida.
 
 Antes de convertir, el backend abre el origen con flags restrictivos, comprueba
 el descriptor con `fstat` y crea en Downloads una instantánea privada que
@@ -46,9 +46,7 @@ contener una mezcla temporal de estados del archivo.
 
 Cancelar o cerrar envía `SIGTERM` una sola vez y la ventana espera a que el
 backend termine para que sus bloques de limpieza retiren instantáneas y
-temporales. No se escala automáticamente a `SIGKILL`: una conversión nativa
-bloqueada puede tardar en cancelarse, trade-off deliberado para no abandonar
-copias sensibles en disco.
+temporales. Tras 15 segundos la ventana habilita una acción explícita de «Forzar detención»; nunca se escala automáticamente a `SIGKILL` y dicha acción solo señala el PID del backend propiedad de la ventana. Forzar puede impedir su limpieza de instantáneas temporales, por lo que la interfaz lo advierte y pide revisar Downloads antes de reintentar.
 
 ## Dependencias y aprobaciones necesarias
 
