@@ -230,7 +230,13 @@ class Window(Gtk.ApplicationWindow):
             pass
 
     def on_close_request(self, _window: Gtk.Window) -> bool:
-        if self.process is None:
+        process = self.process
+        if process is None:
+            return False
+        if process.poll() is not None:
+            self.process = None
+            self.cancel_requested = False
+            self.closing = False
             return False
         if not self.closing:
             self.closing = True

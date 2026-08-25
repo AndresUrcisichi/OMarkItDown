@@ -253,6 +253,7 @@ def copy_clipboard(text: str, run: Callable[..., subprocess.CompletedProcess] = 
     try:
         result = run(
             ["wl-copy", "--type", "text/plain"], input=text, text=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             check=False, timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:

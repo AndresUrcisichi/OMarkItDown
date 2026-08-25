@@ -88,6 +88,25 @@ class FrontendCancellationTests(unittest.TestCase):
 
         killpg.assert_called_once_with(123, frontend.signal.SIGTERM)
 
+    def test_close_allows_exited_backend_and_detaches_waiter(self):
+        process = mock.Mock(pid=123)
+        process.poll.return_value = 0
+        self.window.process = process
+        self.window.cancel_requested = True
+        self.window.finish_ui = mock.Mock()
+        self.window.close = mock.Mock()
+
+        with mock.patch.object(frontend.os, "killpg") as killpg:
+            self.assertFalse(self.window.on_close_request(self.window))
+
+        self.assertIsNone(self.window.process)
+        self.assertFalse(self.window.cancel_requested)
+        self.assertFalse(self.window.closing)
+        killpg.assert_not_called()
+        self.assertFalse(self.window.backend_finished(process, "Terminada"))
+        self.window.finish_ui.assert_not_called()
+        self.window.close.assert_not_called()
+
     def test_large_file_requires_confirmation_before_starting_backend(self):
         self.window.entry = mock.Mock()
         self.window.entry.get_text.return_value = "/tmp/large.pdf"
