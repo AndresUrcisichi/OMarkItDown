@@ -95,13 +95,28 @@ maybe_fail() {
     return 97
   }
 }
+runtime_is_disposable_python_cache() {
+  listing_type=$1
+  relative=$2
+  [ "$listing_type" = f ] || return 1
+  case "/$relative" in
+    */__pycache__/*.pyc|*/__pycache__/*.pyo) return 0 ;;
+  esac
+  return 1
+}
+runtime_normalized_listing() {
+  while IFS='|' read -r listing_type listing_hash relative; do
+    runtime_is_disposable_python_cache "$listing_type" "$relative" && continue
+    printf '%s|%s|%s\n' "$listing_type" "$listing_hash" "$relative"
+  done
+}
 runtime_listing() {
   runtime=$1
   find "$runtime" -mindepth 1 ! -path "$RUNTIME_MANIFEST" \( -type f -o -type l \) -print | LC_ALL=C sort | while IFS= read -r item; do
     relative=${item#"$runtime"/}
     if [ -L "$item" ]; then
       printf 'l|%s|%s\n' "$(readlink -- "$item" | sha256sum | cut -d ' ' -f 1)" "$relative"
-    else
+    elif ! runtime_is_disposable_python_cache f "$relative"; then
       printf 'f|%s|%s\n' "$(hash_file "$item")" "$relative"
     fi
   done
@@ -112,7 +127,9 @@ runtime_is_owned() {
   [ -f "$RUNTIME_OWNER" ] && [ -f "$RUNTIME_MANIFEST" ] || { printf 'conflicto: runtime .venv sin prueba de propiedad; se conserva: %s\n' "$RUNTIME_DIR" >&2; return 1; }
   [ "$(cat "$RUNTIME_OWNER")" = 'markitdown-omarchy-runtime-v1' ] || { printf 'conflicto: marcador de runtime inválido; se conserva: %s\n' "$RUNTIME_DIR" >&2; return 1; }
   find "$RUNTIME_DIR" -mindepth 1 ! -type d ! -type f ! -type l -print | grep -q . && { printf 'conflicto: runtime .venv contiene tipo ambiguo; se conserva: %s\n' "$RUNTIME_DIR" >&2; return 1; }
-  runtime_listing "$RUNTIME_DIR" | cmp -s "$RUNTIME_MANIFEST" - || { printf 'conflicto: runtime .venv modificado; se conserva: %s\n' "$RUNTIME_DIR" >&2; return 1; }
+  current_runtime_listing_hash=$(runtime_listing "$RUNTIME_DIR" | sha256sum | cut -d ' ' -f 1)
+  recorded_runtime_listing_hash=$(runtime_normalized_listing < "$RUNTIME_MANIFEST" | sha256sum | cut -d ' ' -f 1)
+  [ "$current_runtime_listing_hash" = "$recorded_runtime_listing_hash" ] || { printf 'conflicto: runtime .venv modificado; se conserva: %s\n' "$RUNTIME_DIR" >&2; return 1; }
 }
 runtime_record_ownership() {
   printf '%s\n' 'markitdown-omarchy-runtime-v1' > "$RUNTIME_OWNER"

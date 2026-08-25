@@ -348,6 +348,80 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
             self.assertFalse(runtime.exists())
 
+    def test_runtime_caches_do_not_block_dry_run_reapply_or_uninstall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config"
+            bin_dir = Path(directory) / "bin"
+            bin_dir.mkdir()
+            fake_uv = bin_dir / "uv"
+            fake_uv.write_text(
+                "#!/bin/sh\n"
+                "project=\n"
+                "while [ \"$#\" -gt 0 ]; do\n"
+                "  [ \"$1\" = --project ] && { shift; project=$1; }\n"
+                "  shift\n"
+                "done\n"
+                "mkdir -p \"$project/.venv/bin\" \"$project/.venv/lib/python3.12/site-packages/example/__pycache__\"\n"
+                "printf runtime > \"$project/.venv/bin/python\"\n"
+                "printf initial-cache > \"$project/.venv/lib/python3.12/site-packages/example/__pycache__/module.cpython-312.pyc\"\n"
+            )
+            fake_uv.chmod(0o755)
+            applied = self.run_install(config, "--apply", "--with-runtime", uv_dir=bin_dir)
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            runtime = config / "omarchy/markitdown-omarchy/.venv"
+            cache = runtime / "lib/python3.12/site-packages/example/__pycache__/module.cpython-312.pyc"
+            cache.write_bytes(b"normal Python cache")
+
+            dry = self.run_install(config, "--dry-run", "--with-runtime", uv_dir=bin_dir)
+            self.assertEqual(dry.returncode, 0, dry.stderr)
+            cache.unlink()
+            repeated = self.run_install(config, "--apply", "--with-runtime", uv_dir=bin_dir)
+            self.assertEqual(repeated.returncode, 0, repeated.stderr)
+            cache.write_bytes(b"new Python cache")
+            uninstall = self.run_install(config, "--apply", "--uninstall")
+            self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
+            self.assertFalse(runtime.exists())
+
+    def test_runtime_package_changes_and_unknown_files_block_before_mutation(self):
+        for relative in (
+            "lib/python3.12/site-packages/example/__init__.py",
+            "foreign",
+        ):
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as directory:
+                config = Path(directory) / "config"
+                bin_dir = Path(directory) / "bin"
+                bin_dir.mkdir()
+                fake_uv = bin_dir / "uv"
+                fake_uv.write_text(
+                    "#!/bin/sh\n"
+                    "project=\n"
+                    "while [ \"$#\" -gt 0 ]; do\n"
+                    "  [ \"$1\" = --project ] && { shift; project=$1; }\n"
+                    "  shift\n"
+                    "done\n"
+                    "mkdir -p \"$project/.venv/bin\" \"$project/.venv/lib/python3.12/site-packages/example\"\n"
+                    "printf runtime > \"$project/.venv/bin/python\"\n"
+                    "printf package > \"$project/.venv/lib/python3.12/site-packages/example/__init__.py\"\n"
+                )
+                fake_uv.chmod(0o755)
+                applied = self.run_install(config, "--apply", "--with-runtime", uv_dir=bin_dir)
+                self.assertEqual(applied.returncode, 0, applied.stderr)
+                app = config / "omarchy/markitdown-omarchy"
+                runtime = app / ".venv"
+                changed = runtime / relative
+                changed.parent.mkdir(parents=True, exist_ok=True)
+                changed.write_text("user change")
+                menu = config / "omarchy/extensions/omarchy-menu.jsonc"
+                launcher = config / "omarchy/scripts/markitdown-convert"
+                snapshots = (menu.read_bytes(), launcher.read_bytes(), (app / "install-manifest.tsv").read_bytes())
+
+                dry = self.run_install(config, "--dry-run", "--with-runtime", uv_dir=bin_dir)
+                self.assertEqual(dry.returncode, 3, dry.stderr)
+                blocked = self.run_install(config, "--apply", "--uninstall")
+                self.assertEqual(blocked.returncode, 3, blocked.stderr)
+                self.assertEqual((menu.read_bytes(), launcher.read_bytes(), (app / "install-manifest.tsv").read_bytes()), snapshots)
+                self.assertTrue(changed.exists())
+
     def test_runtime_requires_uv_before_installing_files_and_preserves_failed_runtime(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "config"

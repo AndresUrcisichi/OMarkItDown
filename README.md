@@ -101,10 +101,16 @@ conservadora es una `.venv` creada por `--with-runtime`: el instalador guarda en
 ella un marcador de propiedad y un manifiesto con hashes de cada archivo regular
 y enlace simbólico. Solo la elimina si el directorio no es un enlace, los dos
 metadatos son válidos, no contiene tipos especiales y su listado actual coincide
-exactamente con el manifiesto. Un archivo añadido, modificado, ambiguo o un
-runtime parcial sin manifiesto bloquea toda la desinstalación y se conserva; no
-se hace borrado recursivo de datos inciertos. Tampoco se promete restauración
-byte-a-byte de directorios. Si el overlay de menú no existía antes, se conserva
+exactamente con el manifiesto. Se ignoran exclusivamente los directorios
+`__pycache__` y los archivos regulares `.pyc` o `.pyo` que contienen: Python
+puede crearlos, cambiarlos o retirarlos sin bloquear una reaplicación ni la
+desinstalación. Los manifiestos ya instalados se normalizan con esa misma regla
+solo al compararlos, sin reescribirlos. Un archivo de paquete, ejecutable,
+metadato o marcador modificado, un enlace simbólico en caché, cualquier otro
+archivo añadido (incluso dentro de `__pycache__`), un tipo ambiguo o un runtime
+parcial sin manifiesto bloquea toda la desinstalación y se conserva; no se hace
+borrado recursivo de datos inciertos. Tampoco se promete restauración byte-a-byte
+de directorios. Si el overlay de menú no existía antes, se conserva
 el objeto vacío resultante porque la versión actual no persiste evidencia
 suficiente para atribuir con seguridad el archivo entero al proyecto.
 
